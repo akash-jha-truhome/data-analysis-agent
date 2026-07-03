@@ -1,24 +1,60 @@
+"""Graph assembly for the code-execution loop (see spec/agent.md > Graph Assembly)."""
 from langgraph.graph import StateGraph, END
 
 from graph.state import AgentState
-from graph.nodes import transform_text, handle_error, finalize
-from graph.edges import after_transform
+from graph.nodes import (
+    prepare,
+    write_code,
+    execute,
+    answer,
+    build_chart,
+    finalize,
+    handle_error,
+)
+from graph.edges import route_after_execute
 
 
-def _build_graph() -> StateGraph:
-    g = StateGraph(AgentState)
-    g.add_node("transform_text", transform_text)
-    g.add_node("handle_error", handle_error)
-    g.add_node("finalize", finalize)
-    g.set_entry_point("transform_text")
-    g.add_conditional_edges(
-        "transform_text",
-        after_transform,
-        {"finalize": "finalize", "handle_error": "handle_error"},
+def _build_graph():
+    graph = StateGraph(AgentState)
+
+    graph.add_node("prepare", prepare)
+    graph.add_node("write_code", write_code)
+    graph.add_node("execute", execute)
+    graph.add_node("answer", answer)
+    graph.add_node("build_chart", build_chart)
+    graph.add_node("finalize", finalize)
+    graph.add_node("handle_error", handle_error)
+
+    graph.set_entry_point("prepare")
+
+    graph.add_conditional_edges(
+        "prepare",
+        lambda s: "handle_error" if s.get("error") else "write_code",
+        {"handle_error": "handle_error", "write_code": "write_code"},
     )
-    g.add_edge("finalize", END)
-    g.add_edge("handle_error", END)
-    return g.compile()
+    graph.add_conditional_edges(
+        "write_code",
+        lambda s: "handle_error" if s.get("error") else "execute",
+        {"handle_error": "handle_error", "execute": "execute"},
+    )
+    graph.add_conditional_edges(
+        "execute",
+        route_after_execute,
+        {"answer": "answer", "write_code": "write_code", "handle_error": "handle_error"},
+    )
+    graph.add_conditional_edges(
+        "answer",
+        lambda s: "handle_error" if s.get("error") else "build_chart",
+        {"handle_error": "handle_error", "build_chart": "build_chart"},
+    )
+    graph.add_edge("build_chart", "finalize")
+    graph.add_edge("finalize", END)
+    graph.add_edge("handle_error", END)
+
+    return graph.compile()
 
 
-agentic_ai = _build_graph()
+compiled_graph = _build_graph()
+
+# Backwards-compatible alias (skeleton referenced `agentic_ai`).
+agentic_ai = compiled_graph

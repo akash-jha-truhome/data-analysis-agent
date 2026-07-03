@@ -33,3 +33,14 @@ class LLMClient:
 
     def call_model(self, prompt: str, *, system: str | None = None) -> str:
         return self._provider.call_model(prompt, system=system)
+
+    def call_with_usage(
+        self, prompt: str, *, system: str | None = None
+    ) -> tuple[str, dict]:
+        """Return (text, token-usage dict). Providers that expose token counts
+        (Gemini) return real numbers; others fall back to a zeroed usage dict."""
+        fn = getattr(self._provider, "call_with_usage", None)
+        if callable(fn):
+            return fn(prompt, system=system)
+        text = self._provider.call_model(prompt, system=system)
+        return text, {"prompt": 0, "completion": 0, "total": 0}

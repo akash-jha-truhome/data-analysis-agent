@@ -1,7 +1,16 @@
 from graph.state import AgentState
 
 
-def after_transform(state: AgentState) -> str:
+def route_after_execute(state: AgentState) -> str:
+    """ok -> answer | (code error & attempt < max) -> write_code | else -> handle_error."""
     if state.get("error"):
+        # Sandbox infrastructure failure — fatal.
         return "handle_error"
-    return "finalize"
+    exec_result = state.get("exec_result") or {}
+    if exec_result.get("ok"):
+        return "answer"
+    attempt = int(state.get("attempt", 0))
+    max_steps = int(state.get("max_steps", 3))
+    if attempt < max_steps:
+        return "write_code"
+    return "handle_error"
