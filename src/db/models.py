@@ -1,7 +1,7 @@
 from datetime import datetime, timezone
 from uuid import uuid4
 
-from sqlalchemy import Integer, Text, TIMESTAMP
+from sqlalchemy import Integer, Text, TIMESTAMP, UniqueConstraint
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 
@@ -79,6 +79,29 @@ class MessageRow(Base):
     content: Mapped[str] = mapped_column(Text, nullable=False)
     created_at: Mapped[datetime] = mapped_column(
         TIMESTAMP(timezone=True), nullable=False, default=_now
+    )
+
+
+class SessionDatasetRow(Base):
+    """Join table linking datasets to a session (Phase 3 — multi-file).
+
+    ``var_name`` is the python variable the dataframe is exposed as in the
+    sandbox/prompt (e.g. ``df`` for the first dataset, ``orders_2024`` for the
+    next). Unique per (session, dataset).
+    """
+
+    __tablename__ = "session_datasets"
+
+    id: Mapped[str] = mapped_column(Text, primary_key=True, default=_uuid)
+    session_id: Mapped[str] = mapped_column(Text, nullable=False)
+    dataset_id: Mapped[str] = mapped_column(Text, nullable=False)
+    var_name: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True), nullable=False, default=_now
+    )
+
+    __table_args__ = (
+        UniqueConstraint("session_id", "dataset_id", name="uq_session_dataset"),
     )
 
 

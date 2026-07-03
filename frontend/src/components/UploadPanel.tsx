@@ -1,15 +1,24 @@
 'use client'
 
 import { useRef, useState } from 'react'
-import { uploadDataset, ApiError, type DatasetInfo } from '@/lib/api'
-import { Card, ComingSoon, Spinner } from '@/components/ui'
+import {
+  uploadDataset,
+  ApiError,
+  type DatasetInfo,
+  type UploadResult,
+} from '@/lib/api'
+import { Card, Spinner } from '@/components/ui'
 
 export default function UploadPanel({
   dataset,
-  onLoaded,
+  sessionId,
+  hasSources,
+  onUpload,
 }: {
   dataset: DatasetInfo | null
-  onLoaded: (info: DatasetInfo) => void
+  sessionId: string | null
+  hasSources: boolean
+  onUpload: (res: UploadResult) => void
 }) {
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -19,14 +28,14 @@ export default function UploadPanel({
   async function handleFile(file: File | undefined | null) {
     if (!file) return
     setError(null)
-    if (!/\.csv$/i.test(file.name)) {
-      setError(`"${file.name}" isn't a CSV — pick a .csv file to continue.`)
+    if (!/\.(csv|xlsx|xls)$/i.test(file.name)) {
+      setError(`"${file.name}" isn't a CSV or Excel file — pick a .csv, .xlsx, or .xls file.`)
       return
     }
     setBusy(true)
     try {
-      const info = await uploadDataset(file)
-      onLoaded(info)
+      const res = await uploadDataset(file, sessionId ?? undefined)
+      onUpload(res)
     } catch (err) {
       const message = err instanceof ApiError ? err.message : 'Upload failed — please try again.'
       setError(message)
@@ -39,14 +48,12 @@ export default function UploadPanel({
   return (
     <Card className="p-5">
       <div className="mb-3 flex items-center justify-between gap-3">
-        <h2 className="text-sm font-semibold text-slate-800">1 · Upload a dataset</h2>
-        <span
-          className="inline-flex items-center gap-2 opacity-70"
-          title="Multiple files / Excel sheets arrive in a later phase"
-        >
-          <span className="text-xs text-slate-400">Add another file / sheet</span>
-          <ComingSoon />
-        </span>
+        <h2 className="text-sm font-semibold text-slate-800">1 · Upload data</h2>
+        {hasSources && (
+          <span className="text-xs text-slate-400">
+            Add another file or Excel workbook — all stay loaded together.
+          </span>
+        )}
       </div>
 
       <label
@@ -71,20 +78,24 @@ export default function UploadPanel({
           id="csv-input"
           ref={inputRef}
           type="file"
-          accept=".csv,text/csv"
+          accept=".csv,.xlsx,.xls,text/csv"
           className="sr-only"
           onChange={(e) => handleFile(e.target.files?.[0])}
           disabled={busy}
+          data-testid="file-input"
         />
         {busy ? (
-          <Spinner label="Reading your CSV…" />
+          <Spinner label="Reading your file…" />
         ) : (
           <>
             <span className="text-sm font-medium text-slate-700">
-              Drag a CSV here, or <span className="text-indigo-600 underline">browse</span>
+              Drag a CSV or Excel file here, or{' '}
+              <span className="text-indigo-600 underline">browse</span>
             </span>
             <span className="mt-1 text-xs text-slate-400">
-              Upload a CSV to get started — it stays loaded for every question you ask.
+              {hasSources
+                ? 'Add more sources — each CSV and each Excel sheet becomes a source you can name in a question.'
+                : 'Upload a CSV or Excel file to get started — everything stays loaded for every question you ask.'}
             </span>
           </>
         )}

@@ -72,6 +72,19 @@ def _conversation_block(conversation: list | None) -> list[str]:
     return lines
 
 
+def _render_one_dataset(var_name: str, schema: dict, sample_rows: list, *, header: str) -> list[str]:
+    columns = schema.get("columns", [])
+    schema_lines = "\n".join(f"  - {c['name']} ({c['dtype']})" for c in columns)
+    return [
+        f"{header} ({schema.get('n_rows', '?')} rows, {schema.get('n_cols', '?')} columns):",
+        schema_lines,
+        "",
+        f"Sample rows (at most {len(sample_rows)} shown — NOT the full data):",
+        json.dumps(sample_rows, ensure_ascii=False, default=str),
+        "",
+    ]
+
+
 def build_write_code_prompt(
     schema: dict,
     sample_rows: list,
@@ -80,26 +93,51 @@ def build_write_code_prompt(
     conversation: list | None = None,
     prior_code: str | None = None,
     traceback: str | None = None,
+    datasets: list | None = None,
+    clarification_answer: str | None = None,
 ) -> str:
     """Assemble the write_code user prompt.
 
     CRITICAL CONTRACT (spec/architecture.md): the ONLY dataframe-derived content
-    is the schema + at most ``AGENT_SAMPLE_ROWS`` sample rows. The full dataset
-    is NEVER placed in this prompt. Prior conversation turns are TEXT ONLY.
+    is the schema + at most ``AGENT_SAMPLE_ROWS`` sample rows PER dataset. The
+    full dataset is NEVER placed in this prompt. Prior conversation turns are
+    TEXT ONLY.
+
+    Phase 3: when ``datasets`` carries more than one loaded source, each is
+    rendered with ITS OWN variable name + schema + ≤ sample rows so the LLM can
+    write ``orders.merge(customers, ...)``. A single dataset (var ``df``) renders
+    exactly as before for backward compatibility.
     """
-    columns = schema.get("columns", [])
-    schema_lines = "\n".join(
-        f"  - {c['name']} ({c['dtype']})" for c in columns
-    )
-    parts = _conversation_block(conversation) + [
-        f"Dataset schema ({schema.get('n_rows', '?')} rows, {schema.get('n_cols', '?')} columns):",
-        schema_lines,
-        "",
-        f"Sample rows (at most {len(sample_rows)} shown — NOT the full data):",
-        json.dumps(sample_rows, ensure_ascii=False, default=str),
-        "",
-        f"Question: {question}",
-    ]
+    parts = list(_conversation_block(conversation))
+
+    multi = datasets is not None and len(datasets) > 1
+    if multi:
+        parts.append(
+            "Multiple datasets are loaded, each already available as a named "
+            "pandas DataFrame variable. Write code that references them BY NAME "
+            "(e.g. join/compare across them) and assigns the answer to `result`."
+        )
+        parts.append("")
+        for d in datasets:
+            parts += _render_one_dataset(
+                d["var_name"],
+                d.get("schema", {}),
+                d.get("sample_rows", []),
+                header=f"Dataset `{d['var_name']}`",
+            )
+        parts.append(f"Question: {question}")
+    else:
+        parts += _render_one_dataset(
+            "df", schema, sample_rows, header="Dataset schema"
+        )
+        parts.append(f"Question: {question}")
+
+    if clarification_answer:
+        parts += [
+            "",
+            f"The user clarified: {clarification_answer}. "
+            "Now write the pandas code — do NOT ask another question.",
+        ]
     if prior_code and traceback:
         parts += [
             "",
@@ -145,6 +183,26 @@ def extract_json(text: str) -> dict:
         raise
 
 
+def extract_clarify(text: str) -> str | None:
+    """Detect a ``{"clarify": "<question>"}`` response (instead of code).
+
+    Conservative: if the model returned a python code block we treat it as code,
+    never a clarification. Only a JSON object carrying a non-empty ``clarify``
+    string counts as a clarification request.
+    """
+    if not text or _CODE_BLOCK_RE.search(text):
+        return None
+    try:
+        obj = extract_json(text)
+    except Exception:  # noqa: BLE001 — not JSON -> it's code/prose, not a clarify
+        return None
+    if isinstance(obj, dict):
+        q = obj.get("clarify")
+        if isinstance(q, str) and q.strip():
+            return q.strip()
+    return None
+
+
 def _result_table_for_answer(result_table: dict | None, result_repr: str | None) -> str:
     if result_table and result_table.get("columns"):
         capped = {
@@ -159,12 +217,68 @@ def _result_table_for_answer(result_table: dict | None, result_repr: str | None)
 # Nodes
 # --------------------------------------------------------------------------- #
 
+def _session_datasets(session_id: str | None) -> list | None:
+    """All datasets linked to the session (Phase 3), or None if unavailable.
+
+    Imported lazily + guarded so the graph still works before the multi-data
+    slice lands and for the single-file path (no session / one dataset).
+    """
+    if not session_id:
+        return None
+    try:
+        from datasets.store import get_session_datasets
+    except Exception:  # multi-data slice not present yet
+        return None
+    try:
+        return get_session_datasets(session_id)
+    except Exception:
+        return None
+
+
 def prepare(state: AgentState) -> AgentState:
-    """Load schema + sample rows + parquet path from the dataset store."""
+    """Load schema + sample rows + parquet path(s) from the dataset store.
+
+    Phase 3: if the session has MULTIPLE linked datasets, load them all — each
+    bound to its own variable name — and build the per-dataset prompt payload.
+    Otherwise fall back to the exact single-dataset path (var ``df``).
+    """
     from datasets.store import get_dataset_meta
 
     settings = get_settings()
     dataset_id = state.get("dataset_id", "")
+    base = {
+        "attempt": 0,
+        "max_steps": state.get("max_steps", settings.max_steps),
+        "step_trace": list(state.get("step_trace") or []),
+        "tokens": state.get("tokens") or {"prompt": 0, "completion": 0, "total": 0},
+    }
+
+    linked = _session_datasets(state.get("session_id"))
+    if linked and len(linked) > 1:
+        parquet_paths: dict = {}
+        datasets: list = []
+        for d in linked:
+            var = d["var_name"]
+            schema = {
+                "columns": d["columns"],
+                "n_rows": d["n_rows"],
+                "n_cols": d["n_cols"],
+            }
+            parquet_paths[var] = d["parquet_path"]
+            datasets.append(
+                {"var_name": var, "schema": schema, "sample_rows": d["sample_rows"]}
+            )
+        primary = datasets[0]
+        return {
+            **state,
+            **base,
+            "schema": primary["schema"],
+            "sample_rows": primary["sample_rows"],
+            "parquet_paths": parquet_paths,
+            "datasets": datasets,
+        }
+
+    # Single-dataset path — preserved exactly.
     try:
         meta = get_dataset_meta(dataset_id)
     except Exception as exc:  # store/DB failure is fatal
@@ -180,13 +294,13 @@ def prepare(state: AgentState) -> AgentState:
     }
     return {
         **state,
+        **base,
         "schema": schema,
         "sample_rows": meta["sample_rows"],
         "parquet_paths": {"df": meta["parquet_path"]},
-        "attempt": 0,
-        "max_steps": state.get("max_steps", settings.max_steps),
-        "step_trace": list(state.get("step_trace") or []),
-        "tokens": state.get("tokens") or {"prompt": 0, "completion": 0, "total": 0},
+        "datasets": [
+            {"var_name": "df", "schema": schema, "sample_rows": meta["sample_rows"]}
+        ],
     }
 
 
@@ -300,6 +414,7 @@ def write_code(state: AgentState) -> AgentState:
         prior_code = state.get("code")
         traceback = exec_result.get("traceback") or exec_result.get("error")
 
+    clarification_answer = state.get("clarification_answer")
     prompt = build_write_code_prompt(
         state.get("schema", {}),
         state.get("sample_rows", []),
@@ -307,6 +422,8 @@ def write_code(state: AgentState) -> AgentState:
         conversation=state.get("conversation"),
         prior_code=prior_code,
         traceback=traceback,
+        datasets=state.get("datasets"),
+        clarification_answer=clarification_answer,
     )
 
     try:
@@ -314,8 +431,37 @@ def write_code(state: AgentState) -> AgentState:
     except Exception as exc:
         return {**state, "error": f"LLM (write_code) failed: {exc}"}
 
-    code = extract_code(text)
+    tokens = _accumulate_tokens(state, usage)
     attempt = int(state.get("attempt", 0)) + 1
+
+    # Clarification gate — folded into THIS call (no extra LLM round-trip). If the
+    # user has already answered a clarification, ignore any further clarify and
+    # force code. Only clarify on a genuine, first-time ambiguity.
+    clarify_q = None if clarification_answer else extract_clarify(text)
+    if clarify_q:
+        duration_ms = int((time.monotonic() - started) * 1000)
+        trace = _append_trace(
+            state,
+            {
+                "action": "clarify_request",
+                "code": None,
+                "clarification_question": clarify_q,
+                "ok": True,
+                "error": None,
+                "duration_ms": duration_ms,
+            },
+        )
+        return {
+            **state,
+            "needs_clarification": True,
+            "clarification_question": clarify_q,
+            "plan": text,
+            "attempt": attempt,
+            "tokens": tokens,
+            "step_trace": trace,
+        }
+
+    code = extract_code(text)
     duration_ms = int((time.monotonic() - started) * 1000)
     trace = _append_trace(
         state,
@@ -326,7 +472,8 @@ def write_code(state: AgentState) -> AgentState:
         "code": code,
         "plan": text,
         "attempt": attempt,
-        "tokens": _accumulate_tokens(state, usage),
+        "needs_clarification": False,
+        "tokens": tokens,
         "step_trace": trace,
     }
 
@@ -525,6 +672,27 @@ def finalize(state: AgentState) -> AgentState:
         status="completed",
     )
     return {**state, "status": "completed"}
+
+
+def clarify(state: AgentState) -> AgentState:
+    """Terminal Phase-3 node: the ask was genuinely ambiguous.
+
+    Persists the run with status ``needs_clarification`` (the question is carried
+    in the ``clarify_request`` step-trace entry — no new DB column, no fabricated
+    answer/number) and emits a structlog line. The user replies and the run is
+    re-issued with ``clarification_answer`` set, which forces code next time.
+    """
+    _persist_run(state, "needs_clarification")
+    _append_audit_safe(_audit_record(state, "needs_clarification"))
+    _log.info(
+        "run_needs_clarification",
+        run_id=state.get("run_id"),
+        dataset_id=state.get("dataset_id"),
+        question=state.get("question"),
+        clarification=state.get("clarification_question"),
+        status="needs_clarification",
+    )
+    return {**state, "status": "needs_clarification"}
 
 
 def handle_error(state: AgentState) -> AgentState:

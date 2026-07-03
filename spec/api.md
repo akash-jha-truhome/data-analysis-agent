@@ -47,6 +47,10 @@ REST + JSON, plus one multipart upload. Same-origin as the frontend (`/app`), so
 ```
 *(Phase 2 adds optional `session_id` for multi-turn context.)*
 
+*(Phase 3 adds two optional fields:*
+- *`dataset_ids: [uuid, …]` — load SEVERAL datasets into the session so a single question can join/compare across them. `dataset_id` remains the primary/anchor; when `dataset_ids` is present it supersedes it for loading (the anchor is always included). The first linked dataset is bound to the variable `df`; each additional one to a sanitized-filename variable (e.g. `customers`), which the generated pandas references by name.*
+- *`clarification_answer: "…"` — the user's reply to a prior clarifying question (see below). When set, the agent writes code instead of clarifying again.)*
+
 **Response:**
 ```json
 {
@@ -65,6 +69,28 @@ REST + JSON, plus one multipart upload. Same-origin as the frontend (`/app`), so
   "error": null
 }
 ```
+
+*(Phase 3 adds two fields to the `data` payload on every response: `needs_clarification: bool` and `clarification: string | null`.)*
+
+**Clarification gate *(Phase 3)*:** when a question is GENUINELY ambiguous, the agent asks ONE clarifying question BEFORE running code (the decision is folded into the existing `write_code` LLM call — no extra call). The run returns **HTTP 200** (NOT an error) with:
+```json
+{
+  "data": {
+    "run_id": "uuid",
+    "session_id": "uuid",
+    "status": "needs_clarification",
+    "needs_clarification": true,
+    "clarification": "Which metric do you mean — revenue or profit?",
+    "answer": null,
+    "key_numbers": [], "chart": null, "table": null,
+    "code": null,
+    "steps": [{"step": 1, "action": "clarify_request", "ok": true}],
+    "tokens": {"prompt": 5, "completion": 3, "total": 8}
+  },
+  "error": null
+}
+```
+The UI shows the question, the user replies, and the client re-issues the SAME question with `session_id` + `clarification_answer` set; that run proceeds to compute and returns `status:"completed"`. No answer/number is ever fabricated on a `needs_clarification` run.
 
 **Error cases:**
 | Status | Condition |

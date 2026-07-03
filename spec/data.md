@@ -74,6 +74,33 @@ One row per uploaded file (its local storage + schema).
 | content | Text | yes | Turn content (question or answer summary) |
 | created_at | Timestamp | yes | Turn time |
 
+### Entity: SessionDatasetRow (`session_datasets`) — Phase 3 (multi-file)
+
+Join table linking datasets to a session so one session may analyse multiple
+datasets at once (multiple CSVs, or one dataset per Excel sheet).
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| id | Text (uuid) | yes | Primary key |
+| session_id | Text | yes | FK → `sessions.id` |
+| dataset_id | Text | yes | FK → `datasets.id` |
+| var_name | Text | yes | Python variable the dataframe is exposed as in the sandbox/prompt |
+| created_at | Timestamp | yes | Link creation time (defines ordering) |
+
+Unique constraint on (`session_id`, `dataset_id`).
+
+**var_name convention:** the FIRST dataset linked to a session is exposed as
+`df` (preserving single-file behavior + the deterministic quality script that
+references `df`). Subsequent datasets get a lowercase python identifier
+sanitized from their filename/sheet name (e.g. `orders_2024`), deduplicated
+within the session by appending `_2`, `_3`, … on collision.
+
+**Excel multi-sheet ingestion:** an uploaded `.xlsx`/`.xls` workbook produces
+one `DatasetRow` per non-empty sheet. Each sheet's `filename` is recorded as
+`"<workbook>#<SheetName>"`, gets its own `data.parquet`, schema, and ≤5 sample
+rows, and its `var_name` is sanitized from the sheet name (deduped within the
+workbook). A workbook with no readable sheet/rows is a 400.
+
 ### Relationships
 
 - `DatasetRow` 1—N `RunRow` (a dataset is queried by many runs).

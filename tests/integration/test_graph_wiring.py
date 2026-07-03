@@ -48,8 +48,9 @@ def canned_llm(monkeypatch):
 
     def fake_call_with_usage(self, prompt, *, system=None):
         usage = {"prompt": 100, "completion": 20, "total": 120}
-        # The answer prompt demands strict JSON output; write_code does not.
-        if system and "json object" in system.lower():
+        # Distinguish the two Gemini calls by the answer prompt's unique phrase
+        # (robust; both prompts mention JSON now that write_code has a clarify path).
+        if system and "explains a COMPUTED result" in system:
             return _ANSWER_JSON, usage
         return _WRITE_CODE, usage
 

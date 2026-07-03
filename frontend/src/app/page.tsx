@@ -2,18 +2,22 @@
 
 import { useState } from 'react'
 import UploadPanel from '@/components/UploadPanel'
+import SourceChips from '@/components/SourceChips'
 import QuestionBox from '@/components/QuestionBox'
 import SessionThread, { type Turn } from '@/components/SessionThread'
 import DataQualityBanner from '@/components/DataQualityBanner'
 import HistoryPanel from '@/components/HistoryPanel'
-import { Phase3Stubs } from '@/components/StubPanels'
 import { Card } from '@/components/ui'
 import {
   askQuestion,
   getRun,
+  sourcesFromUpload,
+  previewFromUpload,
   ApiError,
   type DatasetInfo,
   type DataQuality,
+  type Source,
+  type UploadResult,
 } from '@/lib/api'
 
 let turnCounter = 0
@@ -23,6 +27,7 @@ function nextTurnId(): string {
 }
 
 export default function Home() {
+  const [sources, setSources] = useState<Source[]>([])
   const [dataset, setDataset] = useState<DatasetInfo | null>(null)
   const [sessionId, setSessionId] = useState<string | null>(null)
   const [turns, setTurns] = useState<Turn[]>([])
@@ -42,23 +47,48 @@ export default function Home() {
     setHistoryKey((k) => k + 1)
   }
 
-  function handleDataset(info: DatasetInfo) {
-    // A newly-loaded dataset starts a fresh session.
-    setDataset(info)
-    resetSession()
+  function handleUpload(res: UploadResult) {
+    const added = sourcesFromUpload(res)
+    const preview = previewFromUpload(res)
+    setSources((prev) => {
+      // First upload starts a fresh session; later uploads add more sources.
+      if (prev.length === 0) resetSession()
+      const seen = new Set(prev.map((s) => s.dataset_id))
+      return [...prev, ...added.filter((s) => !seen.has(s.dataset_id))]
+    })
+    if (preview) setDataset(preview)
   }
 
-  async function handleAsk(question: string) {
-    if (!dataset || asking) return
-    const id = nextTurnId()
-    setTurns((prev) => [...prev, { id, question, status: 'pending' }])
+  function removeSource(datasetId: string) {
+    setSources((prev) => {
+      const next = prev.filter((s) => s.dataset_id !== datasetId)
+      if (next.length === 0) {
+        setDataset(null)
+        resetSession()
+      }
+      return next
+    })
+  }
+
+  const primary = sources[0] ?? null
+  const datasetIds = sources.map((s) => s.dataset_id)
+
+  async function runAsk(id: string, question: string, clarificationAnswer?: string) {
+    if (!primary) return
     setAsking(true)
     try {
-      const res = await askQuestion(dataset.dataset_id, question, sessionId ?? undefined)
-      // Capture the session id from the first answer; thread it thereafter.
+      const res = await askQuestion(primary.dataset_id, question, {
+        sessionId: sessionId ?? undefined,
+        datasetIds,
+        clarificationAnswer,
+      })
       if (res.session_id) setSessionId(res.session_id)
-      updateTurn(id, { status: 'done', result: res })
-      if (res.data_quality) setDataQuality(res.data_quality)
+      if (res.status === 'needs_clarification' && res.clarification) {
+        updateTurn(id, { status: 'clarifying', clarification: res.clarification })
+      } else {
+        updateTurn(id, { status: 'done', result: res, clarification: undefined })
+        if (res.data_quality) setDataQuality(res.data_quality)
+      }
       setHistoryKey((k) => k + 1)
     } catch (err) {
       const apiErr = err instanceof ApiError ? err : new ApiError('Something went wrong.', 0)
@@ -67,6 +97,21 @@ export default function Home() {
     } finally {
       setAsking(false)
     }
+  }
+
+  async function handleAsk(question: string) {
+    if (!primary || asking) return
+    const id = nextTurnId()
+    setTurns((prev) => [...prev, { id, question, status: 'pending' }])
+    await runAsk(id, question)
+  }
+
+  async function handleClarify(turnId: string, answer: string) {
+    if (asking) return
+    const turn = turns.find((t) => t.id === turnId)
+    if (!turn) return
+    updateTurn(turnId, { status: 'pending', clarification: undefined })
+    await runAsk(turnId, turn.question, answer)
   }
 
   async function handleReopen(runId: string) {
@@ -99,6 +144,7 @@ export default function Home() {
   }
 
   const hasThread = turns.length > 0
+  const hasSources = sources.length > 0
 
   return (
     <main className="mx-auto max-w-6xl px-4 py-8 sm:px-6 lg:px-8">
@@ -107,20 +153,28 @@ export default function Home() {
           Data Analysis Agent
         </h1>
         <p className="mt-1 text-sm text-slate-500">
-          Upload a CSV once, then ask as many questions as you like — follow-ups remember the
-          conversation. Each answer comes with the key numbers, an interactive chart, and the exact
-          code it ran.
+          Upload one or more CSV / Excel files, then ask as many questions as you like — across
+          files and sheets. Follow-ups remember the conversation, and when a question is ambiguous
+          the agent asks one clarifying question first. Each answer comes with the key numbers, an
+          interactive chart, and the exact code it ran.
         </p>
       </header>
 
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-3">
         {/* Primary column — the real session journey */}
         <div className="space-y-6 lg:col-span-2">
-          {dataset && (
-            <DataQualityBanner key={dataset.dataset_id} quality={dataQuality} />
+          {hasSources && (
+            <DataQualityBanner key={primary?.dataset_id} quality={dataQuality} />
           )}
 
-          <UploadPanel dataset={dataset} onLoaded={handleDataset} />
+          <UploadPanel
+            dataset={dataset}
+            sessionId={sessionId}
+            hasSources={hasSources}
+            onUpload={handleUpload}
+          />
+
+          <SourceChips sources={sources} onRemove={removeSource} disabled={asking} />
 
           <div className="flex items-center justify-between gap-3">
             <h2 className="sr-only">Ask</h2>
@@ -136,26 +190,31 @@ export default function Home() {
             )}
           </div>
 
-          <QuestionBox enabled={!!dataset} busy={asking} onAsk={handleAsk} />
+          <QuestionBox enabled={hasSources} busy={asking} onAsk={handleAsk} />
 
-          {/* Conversation thread (pending / answer / error states live inside) */}
+          {/* Conversation thread (pending / clarifying / answer / error live inside) */}
           {hasThread && (
-            <SessionThread turns={turns} disabled={asking} onPick={handleAsk} />
+            <SessionThread
+              turns={turns}
+              disabled={asking}
+              onPick={handleAsk}
+              onClarify={handleClarify}
+            />
           )}
 
           {/* Empty state — before any question */}
           {!hasThread && (
             <Card className="p-8 text-center">
               <p className="text-sm text-slate-500">
-                {dataset
+                {hasSources
                   ? 'Ask a question about your data to start the conversation.'
-                  : 'Upload a CSV to get started.'}
+                  : 'Upload a CSV or Excel file to get started.'}
               </p>
             </Card>
           )}
         </div>
 
-        {/* Secondary column — run history + running token total, plus Phase 3 stubs */}
+        {/* Secondary column — run history + running token total */}
         <aside className="space-y-6">
           <HistoryPanel
             sessionId={sessionId}
@@ -163,7 +222,6 @@ export default function Home() {
             onReopen={handleReopen}
             reopening={reopening}
           />
-          <Phase3Stubs />
         </aside>
       </div>
     </main>

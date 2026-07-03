@@ -5,7 +5,9 @@ here — those live in ``datasets.store``.
 """
 from __future__ import annotations
 
+import keyword
 import math
+import re
 from pathlib import Path
 from typing import Any
 
@@ -31,6 +33,53 @@ def load_csv(path: str | Path) -> pd.DataFrame:
     if df.shape[1] == 0:
         raise ValueError(f"CSV file has no columns: {p}")
     return df
+
+
+def load_excel(path: str | Path) -> dict[str, pd.DataFrame]:
+    """Load every sheet of an Excel workbook into ``{sheet_name: DataFrame}``.
+
+    Uses ``pd.read_excel(path, sheet_name=None)`` (openpyxl engine). Raises
+    ValueError for an unreadable/empty workbook so the store/API layer can map
+    it to a 400.
+    """
+    p = Path(path)
+    try:
+        sheets = pd.read_excel(p, sheet_name=None)
+    except ValueError:
+        raise
+    except Exception as exc:  # openpyxl / xlrd parse failures
+        raise ValueError(f"Excel file could not be parsed: {p}") from exc
+    if not sheets:
+        raise ValueError(f"Excel file has no sheets: {p}")
+    return sheets
+
+
+def sanitize_var_name(raw: str) -> str:
+    """Derive a valid, lowercase python identifier from a filename/sheet name.
+
+    Strips any file extension, lowercases, replaces runs of non-identifier
+    characters with a single underscore, and guarantees the result is a valid,
+    non-keyword identifier. Examples::
+
+        "Orders 2024.csv" -> "orders_2024"
+        "2020 data"       -> "col_2020_data"
+        "class"           -> "class_"
+        ""                -> "dataset"
+    """
+    text = str(raw or "").strip().lower()
+    # Drop a trailing file extension (e.g. ".csv", ".xlsx"), not internal dots.
+    text = re.sub(r"\.[a-z0-9]{1,5}$", "", text)
+    # Non [a-z0-9_] runs -> single underscore.
+    text = re.sub(r"[^a-z0-9_]+", "_", text)
+    text = text.strip("_")
+
+    if not text:
+        return "dataset"
+    if text[0].isdigit():
+        text = f"col_{text}"
+    if keyword.iskeyword(text) or keyword.issoftkeyword(text):
+        text = f"{text}_"
+    return text
 
 
 def _to_jsonable(value: Any) -> Any:

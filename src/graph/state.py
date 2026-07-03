@@ -17,6 +17,7 @@ class AgentState(TypedDict, total=False):
     schema: dict                    # {columns:[{name,dtype}], n_rows, n_cols} — set by prepare
     sample_rows: list               # <= sample_rows rows — set by prepare (LLM-visible)
     parquet_paths: dict             # {name: path} — set by prepare (sandbox-only, NOT LLM-visible)
+    datasets: list                  # Phase 3 — per-dataset {var_name, schema, sample_rows} for the multi-source prompt
 
     # Pipeline data (populated progressively)
     plan: str | None                # brief plan text, part of write_code output
@@ -36,6 +37,11 @@ class AgentState(TypedDict, total=False):
     suggestions: list               # 2-3 follow-up question strings — set by answer (Phase 2)
     data_quality: dict | None       # deterministic quality flags — set by profile_quality (Phase 2)
 
+    # Clarification gate (Phase 3 — folded into write_code, no extra LLM call)
+    needs_clarification: bool        # set by write_code when the ask is genuinely ambiguous
+    clarification_question: str | None  # the single question to ask the user
+    clarification_answer: str | None    # the user's reply on a resume run (forces code)
+
     # Control
     error: str | None               # set by any node on fatal failure
-    status: str                     # pending|completed|failed
+    status: str                     # pending|completed|failed|needs_clarification

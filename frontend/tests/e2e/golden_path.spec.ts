@@ -15,7 +15,7 @@ test('upload → ask → answer + chart + table + code', async ({ page }) => {
   expect(bg).not.toBe('rgba(0, 0, 0, 0)')
 
   // Empty-state guidance is present before upload.
-  await expect(page.getByText('Upload a CSV to get started.')).toBeVisible()
+  await expect(page.getByText(/Upload one or more CSV \/ Excel files/i)).toBeVisible()
 
   // 2. Upload the fixture CSV (POST /datasets).
   await page.locator('#csv-input').setInputFiles(FIXTURE_CSV)
@@ -37,7 +37,7 @@ test('upload → ask → answer + chart + table + code', async ({ page }) => {
   // 5. An interactive chart (Plotly) is present.
   const chart = page.getByTestId('chart')
   await expect(chart).toBeVisible()
-  await expect(chart.locator('.plotly, .js-plotly-plot, svg')).toBeVisible({ timeout: 20_000 })
+  await expect(chart.locator('.js-plotly-plot').first()).toBeVisible({ timeout: 20_000 })
 
   // 6. "Show data table" toggle reveals the table behind the chart.
   await page.getByTestId('toggle-table').click()

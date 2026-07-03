@@ -15,6 +15,7 @@ dependencies = [
     "google-genai>=2.9.0",
     "pandas>=2.2",
     "pyarrow>=16",
+    "openpyxl>=3.1",
     "python-multipart>=0.0.9",
 ]
 

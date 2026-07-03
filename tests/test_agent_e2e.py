@@ -127,7 +127,10 @@ def test_failed_run_never_fabricates_a_number(data_root, monkeypatch):
     pd.DataFrame({"a": [1, 2, 3], "b": [4, 5, 6]}).to_csv(csv, index=False)
     meta = store_dataset(file_path=csv, filename="tiny.csv")
 
-    run_id = run_agent(meta["dataset_id"], "sum the nonexistent column please")
+    # Unambiguous question (column `a` exists) so write_code produces real code
+    # rather than triggering the Phase-3 clarification gate; the forced-fail
+    # sandbox then drives the run to `failed` after retries.
+    run_id = run_agent(meta["dataset_id"], "what is the sum of column a?")
 
     with Session(session_module._engine) as s:
         row = s.get(RunRow, run_id)

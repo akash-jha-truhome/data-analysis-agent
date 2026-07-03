@@ -86,10 +86,20 @@ The only dataframe-derived content ever sent to Gemini is:
 
 The full dataframe exists only inside the sandbox subprocess (loaded from parquet). A test asserts the assembled `write_code` prompt contains ≤ `sample_rows` data rows.
 
+**Phase 3 multi-dataset:** a session may have several datasets linked via the
+`session_datasets` join table, each exposed under a python `var_name` (first =
+`df`, others sanitized from filename/sheet). The sandbox receives a
+**parquet_paths map** `{var_name: parquet_path}` and loads each into its named
+dataframe. The LLM still only ever sees, PER dataset, the schema + ≤`sample_rows`
+sample rows (never full data) — so a multi-file prompt is the concatenation of
+per-dataset schema+samples keyed by `var_name`. `get_session_datasets(session_id)`
+supplies this list.
+
 ## Session / Dataset Persistence
 
 - Uploaded files live under `data/datasets/<dataset_id>/` (`original.<ext>` + `data.parquet`). Referenced by `dataset_id`; the frontend keeps the id and passes it with every `/ask`, so the dataset "stays loaded" without re-upload. The sandbox reloads the parquet per run (cheap, stateless, safe).
 - Phase 1: dataset stays loaded for the single-question flow. Phase 2 adds a `SessionRow` + `MessageRow` conversation history so follow-ups have context.
+- Phase 3: a session may hold multiple datasets. `POST /datasets` accepts an optional `session_id` form field and links the uploaded dataset(s). An Excel workbook produces one `DatasetRow` per non-empty sheet (`filename` = `"<workbook>#<Sheet>"`, its own parquet). Each linked dataset carries a `var_name` (first = `df`, others sanitized/deduped) used to expose it in the sandbox and prompt.
 
 ## Audit Trail
 

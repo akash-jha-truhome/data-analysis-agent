@@ -64,6 +64,7 @@ class AgentState(TypedDict, total=False):
     schema: dict                    # {columns:[{name,dtype}], n_rows, n_cols} — set by prepare
     sample_rows: list               # ≤ sample_rows rows — set by prepare (LLM-visible)
     parquet_paths: dict             # {name: path} — set by prepare (sandbox-only, NOT LLM-visible)
+    datasets: list                  # Phase 3 — per-source {var_name, schema, sample_rows} for the multi-dataset prompt
 
     # Pipeline data (populated progressively)
     plan: str | None                # brief plan text, part of write_code output
@@ -82,9 +83,14 @@ class AgentState(TypedDict, total=False):
     suggestions: list               # Phase 2 — 2-3 follow-up questions, batched into answer
     data_quality: dict | None       # Phase 2 — deterministic quality flags — set by profile_quality
 
+    # Clarification gate (Phase 3 — folded into write_code, NO extra LLM call)
+    needs_clarification: bool           # set by write_code when the ask is genuinely ambiguous
+    clarification_question: str | None  # the single question to ask the user
+    clarification_answer: str | None    # the user's reply on a resume run (forces code)
+
     # Control
     error: str | None               # set by any node on fatal failure
-    status: str                     # pending|completed|failed — set by finalize/handle_error
+    status: str                     # pending|completed|failed|needs_clarification
 ```
 
 ---
@@ -92,16 +98,17 @@ class AgentState(TypedDict, total=False):
 ## Nodes / Steps
 
 ### `prepare`
-**Reads:** `dataset_id`. **Writes:** `schema`, `sample_rows`, `parquet_paths`, `step_trace`, `attempt=0`.
-**LLM:** no. **Behaviour:** loads dataset metadata from the dataset store (schema + sample rows + parquet path). Full data is NOT loaded into the process here. On missing dataset → set `error`.
+**Reads:** `dataset_id`, `session_id`. **Writes:** `schema`, `sample_rows`, `parquet_paths`, `datasets`, `step_trace`, `attempt=0`.
+**LLM:** no. **Behaviour:** loads dataset metadata from the dataset store (schema + sample rows + parquet path). Full data is NOT loaded into the process here. **Phase 3:** if the session has MULTIPLE linked datasets (`get_session_datasets(session_id)`), it loads them all — `parquet_paths = {var_name: parquet_path}` and `datasets = [{var_name, schema, sample_rows}]` per source — so the sandbox can bind each dataframe by name. With no session or a single dataset it falls back to the exact single-dataset path (var `df`), preserving Phase 1/2 behaviour. On missing dataset → set `error`.
 
 ### `profile_quality` (Phase 2)
 **Reads:** `dataset_id`, `parquet_paths`. **Writes:** `data_quality`.
 **LLM:** no. **Behaviour:** runs a canned, deterministic pandas profiling script in the SAME bounded, network-free sandbox over the FULL parquet, reporting missing values (count + pct per column), `duplicate_rows`, numeric `outliers` (1.5×IQR), and a one-line `summary`. Cached per `dataset_id` (quality is a property of the dataset, not the question). **MUST NEVER fail the run** — degrades to `{}` on any error and always continues to `write_code`.
 
 ### `write_code`
-**Reads:** `question`, `schema`, `sample_rows`, `conversation` (Phase 2), `code`+`exec_result` (on retry). **Writes:** `code`, `plan`, `attempt+=1`, `tokens`, `step_trace`.
-**LLM:** yes — `gemini-3.5-flash`, prompt `src/prompts/write_code.md`; input is schema + `sample_rows` + question (+ bounded prior-turn conversation TEXT + prior code + traceback on retry); output is a brief plan + a ```python block assigning `result`.
+**Reads:** `question`, `schema`, `sample_rows`, `datasets` (Phase 3), `conversation` (Phase 2), `clarification_answer` (Phase 3), `code`+`exec_result` (on retry). **Writes:** `code`, `plan`, `attempt+=1`, `tokens`, `step_trace`; OR `needs_clarification`+`clarification_question` (Phase 3).
+**LLM:** yes — `gemini-3.5-flash`, prompt `src/prompts/write_code.md`; input is schema + `sample_rows` + question (+ bounded prior-turn conversation TEXT + prior code + traceback on retry). **Phase 3:** when multiple `datasets` are loaded the prompt renders EACH with its own variable name + schema + ≤ `sample_rows` sample rows (never full data) so the model can `orders.merge(customers, …)`.
+**Clarification gate (Phase 3, folded in — NO extra LLM call):** the SAME call returns EITHER a `{"clarify": "<one question>"}` JSON object (only on genuine ambiguity) OR the code. If a clarify is returned and no `clarification_answer` is set → the node sets `needs_clarification=True` + `clarification_question` and writes NO code (routes to `clarify`). If `clarification_answer` IS set, any clarify is ignored and the user's reply is appended to the prompt ("The user clarified: …") to force code. The model is instructed to be CONSERVATIVE — best-guess and proceed unless the ask is truly ambiguous.
 **External calls:** Gemini (transient → retry/backoff; hard → set `error`).
 
 ### `execute`
@@ -119,6 +126,9 @@ class AgentState(TypedDict, total=False):
 
 ### `finalize`
 **Reads:** all output fields. **Writes:** `status="completed"`. **Behaviour:** persists the full audit record to SQLite (`RunRow`), including Phase 2 `suggestions_json` + `data_quality_json`, and appends a JSON line to `data/audit.log`; emits a structlog line (question, latency, tokens, status). The **runner** (not this node) then persists the conversation turns (`MessageRow` user + assistant) and accumulates `SessionRow.total_tokens`.
+
+### `clarify` (Phase 3)
+**Reads:** `clarification_question`, `run_id`, `step_trace`. **Writes:** `status="needs_clarification"`. **Behaviour:** terminal node when the ask was genuinely ambiguous. Persists the run with status `needs_clarification` (the question rides in the `clarify_request` step-trace entry — no new DB column, no fabricated answer/number), appends to the audit log, emits a structlog line, and ENDs. The runner records only the user turn (never an assistant answer). The user replies and the client re-issues the same question with `clarification_answer` set, resuming at `write_code`.
 
 ### `handle_error`
 **Reads:** `error`, `run_id`, `step_trace`. **Writes:** `status="failed"`. **Behaviour:** persists the failed run + trace to SQLite + audit log, logs with `run_id`, terminates.
@@ -138,7 +148,7 @@ profile_quality  (deterministic; never errors the run)
   │
   ▼
 write_code ──(error)───────────────────────► handle_error
-  │
+  │        └──(needs_clarification)─────────► clarify ──► END   (Phase 3)
   ▼
 execute
   │
@@ -160,6 +170,7 @@ execute
 | `prepare` | else | `profile_quality` |
 | `profile_quality` | always (never errors) | `write_code` |
 | `write_code` | `state.error` set (Gemini hard failure) | `handle_error` |
+| `write_code` | `state.needs_clarification` set (Phase 3) | `clarify` |
 | `write_code` | else | `execute` |
 | `execute` | `exec_result.ok` | `answer` |
 | `execute` | `not ok` and `attempt < max_steps` | `write_code` |
@@ -192,7 +203,7 @@ Phase 1–2: none. **Phase 3** adds the clarification gate:
 
 | Checkpoint | What is shown | Expected user action | Timeout / default |
 |------------|---------------|----------------------|-------------------|
-| `clarify` (Phase 3) | One clarifying question when the ask is genuinely ambiguous | User types a short reply | No timeout; the run waits for the reply, then resumes at `write_code` |
+| `clarify` (Phase 3) | One clarifying question when the ask is genuinely ambiguous | User types a short reply | No timeout; the run ends `needs_clarification` and the client re-issues the same question with `clarification_answer` set, which forces code at `write_code` |
 
 ---
 
@@ -223,7 +234,7 @@ Phase 1–2: none. **Phase 3** adds the clarification gate:
 
 - **Run isolation:** one run at a time is the expected personal-use pattern; runs are scoped by `run_id` and the sandbox is a fresh subprocess per run, so concurrent runs are naturally isolated (no shared mutable in-process df).
 - **Parallel nodes within a run:** none — the loop is inherently sequential.
-- **Checkpointing:** none (runs are short; no human-in-the-loop until Phase 3, where the clarify node uses a LangGraph interrupt).
+- **Checkpointing:** none (runs are short). The Phase 3 clarification gate does NOT use a LangGraph interrupt/checkpoint — the `clarify` node terminates the run with `status="needs_clarification"`; the client re-issues the same question with `clarification_answer` set to resume, keeping runs stateless and short.
 
 ---
 
@@ -240,6 +251,7 @@ graph.add_node("answer", answer)
 graph.add_node("build_chart", build_chart)
 graph.add_node("finalize", finalize)
 graph.add_node("handle_error", handle_error)
+graph.add_node("clarify", clarify)  # Phase 3 — terminal clarification gate
 
 graph.set_entry_point("prepare")
 
@@ -251,8 +263,8 @@ graph.add_conditional_edges(
 graph.add_edge("profile_quality", "write_code")  # never errors the run
 graph.add_conditional_edges(
     "write_code",
-    lambda s: "handle_error" if s.get("error") else "execute",
-    {"handle_error": "handle_error", "execute": "execute"},
+    route_after_write_code,  # error→handle_error | needs_clarification→clarify | else→execute
+    {"handle_error": "handle_error", "clarify": "clarify", "execute": "execute"},
 )
 graph.add_conditional_edges(
     "execute",
@@ -267,6 +279,7 @@ graph.add_conditional_edges(
 graph.add_edge("build_chart", "finalize")
 graph.add_edge("finalize", END)
 graph.add_edge("handle_error", END)
+graph.add_edge("clarify", END)  # Phase 3
 
 compiled_graph = graph.compile()
 ```

@@ -4,16 +4,19 @@ import ResultView from '@/components/ResultView'
 import CodeTrace from '@/components/CodeTrace'
 import StepIndicator from '@/components/StepIndicator'
 import SuggestionChips from '@/components/SuggestionChips'
+import ClarificationBox from '@/components/ClarificationBox'
 import { Card } from '@/components/ui'
 import type { ApiError, AskResult } from '@/lib/api'
 
 export interface Turn {
   id: string
   question: string
-  status: 'pending' | 'done' | 'error'
+  status: 'pending' | 'clarifying' | 'done' | 'error'
   result?: AskResult
   error?: ApiError
   reopened?: boolean
+  // Phase 3 clarification gate: the agent's question while awaiting a reply.
+  clarification?: string
 }
 
 /**
@@ -26,10 +29,12 @@ export default function SessionThread({
   turns,
   disabled,
   onPick,
+  onClarify,
 }: {
   turns: Turn[]
   disabled: boolean
   onPick: (question: string) => void
+  onClarify: (turnId: string, answer: string) => void
 }) {
   return (
     <div className="space-y-6" data-testid="session-thread">
@@ -47,6 +52,15 @@ export default function SessionThread({
 
           {/* In-flight */}
           {turn.status === 'pending' && <StepIndicator />}
+
+          {/* Clarification gate — the agent asks one question before computing */}
+          {turn.status === 'clarifying' && turn.clarification && (
+            <ClarificationBox
+              question={turn.clarification}
+              busy={disabled}
+              onAnswer={(answer) => onClarify(turn.id, answer)}
+            />
+          )}
 
           {/* Failure — human message, never a fabricated number */}
           {turn.status === 'error' && turn.error && (
