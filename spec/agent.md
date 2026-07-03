@@ -25,11 +25,11 @@ The LangGraph agent that turns a natural-language question into an executed-pand
 | `write_code` | Google Gemini | `gemini-3.5-flash` | Cheap, fast code generation from schema + samples; minimize cost. |
 | `answer` | Google Gemini | `gemini-3.5-flash` | Cheap, fast prose + structured chart hint from the computed result. |
 
-No LLM in `prepare`, `execute`, `build_chart`, `finalize`, `handle_error` (deterministic). **2 LLM calls per successful query; +1 per retry.**
+No LLM in `prepare`, `profile_quality`, `execute`, `build_chart`, `finalize`, `handle_error` (deterministic). **2 LLM calls per successful query; +1 per retry.** Phase 2 adds **no extra LLM call** — follow-up `suggestions` are batched into the existing `answer` call, and `profile_quality` is a deterministic (no-LLM) sandbox pass.
 
 **Fallback behaviour:** transient Gemini errors (5xx/rate-limit) → retry with exponential backoff (max 3, `google-genai` + wrapper). Hard failure or exhausted retries → route to `handle_error`, mark run `failed`, return a clean `api_error`. **Never fabricate a number** if code could not run — surface the failure. (Test path calls the real API; this is production resilience, not an offline stub.)
 
-**Prompt strategy:** system/user split, structured output. `write_code` returns a fenced ```python block assigning `result` (parsed out). `answer` returns strict JSON `{answer, key_numbers:[{label,value}], chart:{type,x,y,series}}` (validated; on parse failure, one reformat retry then `handle_error`). Prompts carry **only** schema + `sample_rows` (never full data); the retry prompt appends the prior code + traceback.
+**Prompt strategy:** system/user split, structured output. `write_code` returns a fenced ```python block assigning `result` (parsed out). `answer` returns strict JSON `{answer, key_numbers:[{label,value}], chart:{type,x,y,series}, suggestions:["q1","q2","q3"]}` (validated; on parse failure, one reformat retry then `handle_error`; `suggestions` defaults to `[]` if absent). Prompts carry **only** schema + `sample_rows` (never full data); the retry prompt appends the prior code + traceback. **Phase 2:** `write_code` also receives the bounded prior-turn conversation as TEXT ONLY (last ≤6 turns, each ≤500 chars) so follow-ups resolve against context — conversation NEVER carries dataframe rows.
 
 ---
 
@@ -54,6 +54,10 @@ class AgentState(TypedDict, total=False):
     # Identity
     run_id: str                     # set by runner before invoke
     dataset_id: str                 # set by runner from the /ask request
+    session_id: str | None          # Phase 2 — multi-turn session this run belongs to
+
+    # Conversation memory (Phase 2)
+    conversation: list              # prior turns [{role, content}] — TEXT ONLY, bounded
 
     # Input
     question: str                   # user's natural-language question
