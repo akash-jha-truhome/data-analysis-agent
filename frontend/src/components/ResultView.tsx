@@ -5,7 +5,7 @@ import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import ChartView from '@/components/ChartView'
 import CodeTrace from '@/components/CodeTrace'
-import { Card, ComingSoon } from '@/components/ui'
+import { Card } from '@/components/ui'
 import type { AskResult, DataTable } from '@/lib/api'
 
 export default function ResultView({ result }: { result: AskResult }) {
@@ -44,12 +44,6 @@ export default function ResultView({ result }: { result: AskResult }) {
             ))}
           </div>
         )}
-
-        {/* Labelled stub — conversational follow-ups (Phase 2 memory) */}
-        <div className="mt-5 flex items-center gap-2 border-t border-slate-100 pt-4 opacity-70">
-          <span className="text-xs text-slate-500">Ask a follow-up (remembers context)</span>
-          <ComingSoon />
-        </div>
       </Card>
 
       {result.chart && <ChartCard chart={result.chart} table={result.table} />}

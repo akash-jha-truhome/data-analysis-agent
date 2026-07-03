@@ -41,12 +41,44 @@ class RunRow(Base):
     completion_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
     total_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
+    # --- Phase 2 insights (spec/data.md) ---
+    suggestions_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    data_quality_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         TIMESTAMP(timezone=True), nullable=False, default=_now
     )
     updated_at: Mapped[datetime] = mapped_column(
         TIMESTAMP(timezone=True), nullable=False, default=_now, onupdate=_now
+    )
+
+
+class SessionRow(Base):
+    """A multi-turn analysis session over a loaded dataset (Phase 2)."""
+
+    __tablename__ = "sessions"
+
+    id: Mapped[str] = mapped_column(Text, primary_key=True, default=_uuid)
+    dataset_id: Mapped[str] = mapped_column(Text, nullable=False)
+    total_tokens: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    created_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True), nullable=False, default=_now
+    )
+
+
+class MessageRow(Base):
+    """One conversation turn (user question or assistant answer) (Phase 2)."""
+
+    __tablename__ = "messages"
+
+    id: Mapped[str] = mapped_column(Text, primary_key=True, default=_uuid)
+    session_id: Mapped[str] = mapped_column(Text, nullable=False)
+    run_id: Mapped[str | None] = mapped_column(Text, nullable=True)
+    role: Mapped[str] = mapped_column(Text, nullable=False)
+    content: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True), nullable=False, default=_now
     )
 
 

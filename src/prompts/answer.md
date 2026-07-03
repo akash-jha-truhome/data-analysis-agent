@@ -11,7 +11,8 @@ shape:
 {
   "answer": "<one or two sentence plain-language answer grounded in the result table>",
   "key_numbers": [{"label": "<short label>", "value": <number from the table>}],
-  "chart": {"type": "<bar|line|scatter|pie>", "x": "<column name>", "y": "<column name>", "series": null}
+  "chart": {"type": "<bar|line|scatter|pie>", "x": "<column name>", "y": "<column name>", "series": null},
+  "suggestions": ["<follow-up question 1>", "<follow-up question 2>", "<follow-up question 3>"]
 }
 
 Rules:
@@ -24,4 +25,7 @@ Rules:
   grouping column when relevant, otherwise null.
 - If the result is a single scalar (no chartable columns), still fill `answer`
   and `key_numbers`; set `chart` to {"type": "bar", "x": null, "y": null, "series": null}.
+- `suggestions` lists 2–3 concise, natural follow-up questions a user might ask
+  next, each grounded in this dataset and the current result (e.g. a breakdown,
+  a trend over time, or a comparison). Keep each under ~12 words.
 - Output must be valid JSON and nothing else.

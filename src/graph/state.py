@@ -7,6 +7,10 @@ class AgentState(TypedDict, total=False):
     # Identity
     run_id: str                     # set by runner before invoke
     dataset_id: str                 # set by runner from the /ask request
+    session_id: str | None          # Phase 2 — multi-turn session this run belongs to
+
+    # Conversation memory (Phase 2)
+    conversation: list              # prior turns [{role, content}] — text only, bounded
 
     # Input
     question: str                   # user's natural-language question
@@ -29,6 +33,8 @@ class AgentState(TypedDict, total=False):
     chart_spec: dict | None         # Plotly figure spec — set by build_chart
     result_table: dict | None       # {columns, rows} behind the answer — set from exec_result
     tokens: dict                    # {prompt, completion, total} — accumulated across LLM calls
+    suggestions: list               # 2-3 follow-up question strings — set by answer (Phase 2)
+    data_quality: dict | None       # deterministic quality flags — set by profile_quality (Phase 2)
 
     # Control
     error: str | None               # set by any node on fatal failure

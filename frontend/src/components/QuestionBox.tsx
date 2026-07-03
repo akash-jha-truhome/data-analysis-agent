@@ -1,7 +1,7 @@
 'use client'
 
 import { useState } from 'react'
-import { Card, ComingSoon } from '@/components/ui'
+import { Card } from '@/components/ui'
 
 export default function QuestionBox({
   enabled,
@@ -45,22 +45,6 @@ export default function QuestionBox({
           {busy ? 'Working…' : 'Ask'}
         </button>
       </form>
-
-      {/* Labelled stub — suggested questions (Phase 2) */}
-      <div className="mt-4 flex flex-wrap items-center gap-2 opacity-70">
-        <span className="text-xs font-medium text-slate-500">Suggested questions</span>
-        <ComingSoon />
-        <div aria-hidden className="flex flex-wrap gap-2">
-          {['Top 5 by value', 'Trend over time', 'Compare categories'].map((s) => (
-            <span
-              key={s}
-              className="cursor-not-allowed rounded-full border border-dashed border-slate-300 bg-slate-50 px-3 py-1 text-xs text-slate-400"
-            >
-              {s}
-            </span>
-          ))}
-        </div>
-      </div>
     </Card>
   )
 }

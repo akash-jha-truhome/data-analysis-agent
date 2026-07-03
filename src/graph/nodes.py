@@ -49,11 +49,35 @@ def _accumulate_tokens(state: AgentState, usage: dict) -> dict:
 # Prompt building + parsing (pure functions — unit-tested directly)
 # --------------------------------------------------------------------------- #
 
+_MAX_CONVERSATION_TURNS = 6  # bound prior turns injected into write_code
+_MAX_TURN_CHARS = 500        # bound the length of each prior turn's text
+
+
+def _conversation_block(conversation: list | None) -> list[str]:
+    """Render prior turns as TEXT ONLY (question + brief answer summary).
+
+    CRITICAL: this carries prior-turn *text* so follow-ups resolve against
+    context; it NEVER carries dataframe rows. Bounded to the last few turns.
+    """
+    turns = [t for t in (conversation or []) if t.get("content")]
+    if not turns:
+        return []
+    turns = turns[-_MAX_CONVERSATION_TURNS:]
+    lines = ["Conversation so far (prior turns — resolve follow-ups against this):"]
+    for turn in turns:
+        role = str(turn.get("role", "user"))
+        content = str(turn.get("content", ""))[:_MAX_TURN_CHARS]
+        lines.append(f"  {role}: {content}")
+    lines.append("")
+    return lines
+
+
 def build_write_code_prompt(
     schema: dict,
     sample_rows: list,
     question: str,
     *,
+    conversation: list | None = None,
     prior_code: str | None = None,
     traceback: str | None = None,
 ) -> str:
@@ -61,13 +85,13 @@ def build_write_code_prompt(
 
     CRITICAL CONTRACT (spec/architecture.md): the ONLY dataframe-derived content
     is the schema + at most ``AGENT_SAMPLE_ROWS`` sample rows. The full dataset
-    is NEVER placed in this prompt.
+    is NEVER placed in this prompt. Prior conversation turns are TEXT ONLY.
     """
     columns = schema.get("columns", [])
     schema_lines = "\n".join(
         f"  - {c['name']} ({c['dtype']})" for c in columns
     )
-    parts = [
+    parts = _conversation_block(conversation) + [
         f"Dataset schema ({schema.get('n_rows', '?')} rows, {schema.get('n_cols', '?')} columns):",
         schema_lines,
         "",
@@ -166,6 +190,104 @@ def prepare(state: AgentState) -> AgentState:
     }
 
 
+# --------------------------------------------------------------------------- #
+# Data-quality profiling (DETERMINISTIC — no LLM; runs in the real sandbox)
+# --------------------------------------------------------------------------- #
+
+# Canned pandas profiling script. Computed over the FULL parquet in the same
+# bounded, network-free sandbox the agent uses for generated code. Assigns a
+# plain dict to `result`; the sandbox serializes it into a one-cell table which
+# `profile_quality` unpacks. Uses only the sandbox's restricted builtins.
+_QUALITY_SCRIPT = """
+n_rows = len(df)
+missing = []
+for col in df.columns:
+    cnt = int(df[col].isna().sum())
+    if cnt > 0:
+        pct = round(100.0 * cnt / n_rows, 2) if n_rows else 0.0
+        missing.append({"column": str(col), "count": cnt, "pct": pct})
+
+duplicate_rows = int(df.duplicated().sum())
+
+outliers = []
+numeric = df.select_dtypes(include="number")
+for col in numeric.columns:
+    s = numeric[col].dropna()
+    if len(s) < 4:
+        continue
+    q1 = s.quantile(0.25)
+    q3 = s.quantile(0.75)
+    iqr = q3 - q1
+    if iqr <= 0:
+        continue
+    lo = q1 - 1.5 * iqr
+    hi = q3 + 1.5 * iqr
+    cnt = int(((s < lo) | (s > hi)).sum())
+    if cnt > 0:
+        outliers.append({"column": str(col), "count": cnt})
+
+parts = []
+if missing:
+    parts.append(str(len(missing)) + " column(s) with missing values")
+if duplicate_rows:
+    parts.append(str(duplicate_rows) + " duplicate row(s)")
+if outliers:
+    parts.append("outliers in " + str(len(outliers)) + " numeric column(s)")
+summary = "; ".join(parts) if parts else "No data-quality issues detected."
+
+result = {
+    "missing": missing,
+    "duplicate_rows": duplicate_rows,
+    "outliers": outliers,
+    "summary": summary,
+}
+"""
+
+# In-process cache: quality is a property of the dataset, not the question, so
+# repeated questions in a session don't recompute the profile.
+_QUALITY_CACHE: dict[str, dict] = {}
+
+
+def _empty_quality() -> dict:
+    return {"missing": [], "duplicate_rows": 0, "outliers": [], "summary": ""}
+
+
+def profile_quality(state: AgentState) -> AgentState:
+    """Deterministically flag data-quality issues (missing/duplicates/outliers).
+
+    Runs the canned profiling script in the real sandbox over the full parquet.
+    MUST NEVER fail the run — degrades to ``{}`` on any error. Cached per
+    dataset_id so repeated questions in a session don't recompute.
+    """
+    dataset_id = state.get("dataset_id", "")
+    if dataset_id in _QUALITY_CACHE:
+        return {**state, "data_quality": _QUALITY_CACHE[dataset_id]}
+
+    dq: dict = {}
+    try:
+        from sandbox.executor import run_code
+
+        settings = get_settings()
+        exec_result = run_code(
+            _QUALITY_SCRIPT,
+            state.get("parquet_paths", {}),
+            timeout_s=settings.sandbox_timeout_s,
+            mem_mb=settings.sandbox_mem_mb,
+        )
+        if exec_result.get("ok"):
+            table = exec_result.get("result_table") or {}
+            rows = table.get("rows") or []
+            if rows and rows[0] and isinstance(rows[0][0], dict):
+                dq = rows[0][0]
+    except Exception as exc:  # profiling must NEVER fail the run
+        _log.warning("profile_quality_failed", error=str(exc), run_id=state.get("run_id"))
+        dq = {}
+
+    if dataset_id:
+        _QUALITY_CACHE[dataset_id] = dq
+    return {**state, "data_quality": dq}
+
+
 def write_code(state: AgentState) -> AgentState:
     """Gemini Flash: schema + sample rows + question -> pandas assigning `result`."""
     started = time.monotonic()
@@ -182,6 +304,7 @@ def write_code(state: AgentState) -> AgentState:
         state.get("schema", {}),
         state.get("sample_rows", []),
         state.get("question", ""),
+        conversation=state.get("conversation"),
         prior_code=prior_code,
         traceback=traceback,
     )
@@ -294,6 +417,12 @@ def answer(state: AgentState) -> AgentState:
     key_numbers = parsed.get("key_numbers") or []
     if not isinstance(key_numbers, list):
         key_numbers = []
+    # Follow-up suggestions are BATCHED into this same answer call (no extra LLM
+    # call) — keep 2-3 concise strings.
+    suggestions = parsed.get("suggestions") or []
+    if not isinstance(suggestions, list):
+        suggestions = []
+    suggestions = [str(s) for s in suggestions if s][:3]
     duration_ms = int((time.monotonic() - started) * 1000)
     trace = _append_trace(
         state,
@@ -303,6 +432,7 @@ def answer(state: AgentState) -> AgentState:
         **state,
         "answer": parsed.get("answer", ""),
         "key_numbers": key_numbers,
+        "suggestions": suggestions,
         "chart_hint": parsed.get("chart") or {},
         "tokens": tokens,
         "step_trace": trace,
@@ -349,6 +479,10 @@ def _persist_run(state: AgentState, status: str) -> None:
         run.prompt_tokens = tokens.get("prompt")
         run.completion_tokens = tokens.get("completion")
         run.total_tokens = tokens.get("total")
+        sg = state.get("suggestions")
+        run.suggestions_json = json.dumps(sg) if sg is not None else None
+        dq = state.get("data_quality")
+        run.data_quality_json = json.dumps(dq) if dq is not None else None
         run.error_message = state.get("error")
 
 

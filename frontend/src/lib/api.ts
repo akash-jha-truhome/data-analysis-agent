@@ -54,6 +54,24 @@ export interface TokenUsage {
   total: number
 }
 
+export interface MissingColumn {
+  column: string
+  count: number
+  pct: number
+}
+
+export interface OutlierColumn {
+  column: string
+  count: number
+}
+
+export interface DataQuality {
+  missing: MissingColumn[]
+  duplicate_rows: number
+  outliers: OutlierColumn[]
+  summary: string
+}
+
 export interface AskResult {
   run_id: string
   status: 'completed' | 'failed'
@@ -64,6 +82,38 @@ export interface AskResult {
   code: string | null
   steps: RunStep[]
   tokens?: TokenUsage | null
+  // Phase 2 additions.
+  session_id?: string
+  suggestions?: string[]
+  data_quality?: DataQuality | null
+  // Present on GET /runs/{id} (the reopened-run payload).
+  question?: string
+  created_at?: string
+}
+
+// ---- Session / history shapes (Phase 2) ------------------------------------
+
+export interface SessionInfo {
+  session_id: string
+  dataset_id: string
+  total_tokens: number
+  run_count: number
+  created_at: string
+}
+
+export interface SessionRunSummary {
+  run_id: string
+  question: string
+  status: 'completed' | 'failed'
+  total_tokens: number
+  created_at: string
+}
+
+export interface SessionRuns {
+  session_id: string
+  dataset_id: string
+  total_tokens: number
+  runs: SessionRunSummary[]
 }
 
 // Success envelope: { data, error }. Failure: HTTP error with
@@ -140,14 +190,29 @@ export async function uploadDataset(file: File): Promise<DatasetInfo> {
   return body.data
 }
 
-/** POST /ask — ask one question about a loaded dataset. */
-export async function askQuestion(datasetId: string, question: string): Promise<AskResult> {
+/**
+ * POST /ask — ask one question about a loaded dataset.
+ *
+ * Phase 2: pass `sessionId` to continue an existing multi-turn session so the
+ * agent remembers prior turns ("now break that down by month"). Omit it on the
+ * first question — the backend mints a session and returns its id in
+ * `data.session_id`, which the caller threads into subsequent asks.
+ */
+export async function askQuestion(
+  datasetId: string,
+  question: string,
+  sessionId?: string,
+): Promise<AskResult> {
   let res: Response
   try {
     res = await fetch('/ask', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ dataset_id: datasetId, question }),
+      body: JSON.stringify({
+        dataset_id: datasetId,
+        question,
+        ...(sessionId ? { session_id: sessionId } : {}),
+      }),
     })
   } catch {
     throw new ApiError('Network error — is the server running on :8001?', 0)
@@ -181,12 +246,32 @@ export async function askQuestion(datasetId: string, question: string): Promise<
   return data
 }
 
-/** GET /runs/{run_id} — full audit record for a past query (used Phase 2+). */
+/** GET /runs/{run_id} — full audit record for a past query, used to REOPEN it. */
 export async function getRun(runId: string): Promise<AskResult> {
   const res = await fetch(`/runs/${encodeURIComponent(runId)}`)
   const body = (await parseJson(res)) as Envelope<AskResult> | null
   if (!res.ok || !body?.data) {
     throw new ApiError(body?.detail?.message ?? `Run not found (${res.status}).`, res.status)
+  }
+  return body.data
+}
+
+/** GET /sessions/{session_id} — running session metadata + token total. */
+export async function getSession(sessionId: string): Promise<SessionInfo> {
+  const res = await fetch(`/sessions/${encodeURIComponent(sessionId)}`)
+  const body = (await parseJson(res)) as Envelope<SessionInfo> | null
+  if (!res.ok || !body?.data) {
+    throw new ApiError(body?.detail?.message ?? `Session not found (${res.status}).`, res.status)
+  }
+  return body.data
+}
+
+/** GET /sessions/{session_id}/runs — run history (newest-first) + token total. */
+export async function getSessionRuns(sessionId: string): Promise<SessionRuns> {
+  const res = await fetch(`/sessions/${encodeURIComponent(sessionId)}/runs`)
+  const body = (await parseJson(res)) as Envelope<SessionRuns> | null
+  if (!res.ok || !body?.data) {
+    throw new ApiError(body?.detail?.message ?? `Session not found (${res.status}).`, res.status)
   }
   return body.data
 }

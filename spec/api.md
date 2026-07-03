@@ -85,9 +85,55 @@ REST + JSON, plus one multipart upload. Same-origin as the frontend (`/app`), so
 
 **Purpose:** Fetch stored dataset metadata (for reload/display). **Response:** `data` = the `POST /datasets` payload. **Error:** 404 unknown id.
 
-### `GET /sessions/{session_id}/runs`  ·  `GET /sessions/{session_id}`  *(Phase 2)*
+### `GET /sessions/{session_id}`  *(Phase 2)*
 
-Run-history browser + running session token total. `data` = `{session_id, total_tokens, runs:[…]}`.
+**Purpose:** Session summary for the running token total + history header.
+
+`total_tokens` is authoritative — computed as the SUM of the member runs'
+`total_tokens` (robust even if the stored `SessionRow.total_tokens` counter
+drifts). `run_count` is the number of runs tied to the session.
+
+**Response:**
+```json
+{
+  "data": {
+    "session_id": "uuid",
+    "dataset_id": "uuid",
+    "total_tokens": 2120,
+    "run_count": 2,
+    "created_at": "2026-07-03T12:00:00+00:00"
+  },
+  "error": null
+}
+```
+
+**Error cases:** 404 with `{"detail": {"code": "UNKNOWN_SESSION", "message": …}}` when `session_id` is unknown.
+
+### `GET /sessions/{session_id}/runs`  *(Phase 2)*
+
+**Purpose:** Run-history browser — the runs in a session, newest-first. The
+frontend reopens any run via the existing `GET /runs/{run_id}`.
+
+`total_tokens` again = the SUM of the listed runs' `total_tokens`. Each run
+summary is `{run_id, question, status, total_tokens, created_at}`.
+
+**Response:**
+```json
+{
+  "data": {
+    "session_id": "uuid",
+    "dataset_id": "uuid",
+    "total_tokens": 2120,
+    "runs": [
+      {"run_id": "uuid", "question": "revenue by region", "status": "failed", "total_tokens": 1300, "created_at": "2026-07-03T12:05:00+00:00"},
+      {"run_id": "uuid", "question": "total revenue", "status": "completed", "total_tokens": 820, "created_at": "2026-07-03T12:00:00+00:00"}
+    ]
+  },
+  "error": null
+}
+```
+
+**Error cases:** 404 with `{"detail": {"code": "UNKNOWN_SESSION", "message": …}}` when `session_id` is unknown.
 
 ## Authentication
 

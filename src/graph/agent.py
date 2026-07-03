@@ -4,6 +4,7 @@ from langgraph.graph import StateGraph, END
 from graph.state import AgentState
 from graph.nodes import (
     prepare,
+    profile_quality,
     write_code,
     execute,
     answer,
@@ -18,6 +19,7 @@ def _build_graph():
     graph = StateGraph(AgentState)
 
     graph.add_node("prepare", prepare)
+    graph.add_node("profile_quality", profile_quality)
     graph.add_node("write_code", write_code)
     graph.add_node("execute", execute)
     graph.add_node("answer", answer)
@@ -27,11 +29,14 @@ def _build_graph():
 
     graph.set_entry_point("prepare")
 
+    # prepare -> profile_quality -> write_code (on prepare error, short-circuit).
     graph.add_conditional_edges(
         "prepare",
-        lambda s: "handle_error" if s.get("error") else "write_code",
-        {"handle_error": "handle_error", "write_code": "write_code"},
+        lambda s: "handle_error" if s.get("error") else "profile_quality",
+        {"handle_error": "handle_error", "profile_quality": "profile_quality"},
     )
+    # profile_quality NEVER errors the run — it always continues to write_code.
+    graph.add_edge("profile_quality", "write_code")
     graph.add_conditional_edges(
         "write_code",
         lambda s: "handle_error" if s.get("error") else "execute",
