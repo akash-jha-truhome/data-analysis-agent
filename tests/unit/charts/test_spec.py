@@ -58,6 +58,18 @@ def test_bad_hint_falls_back_to_first_two_columns():
     assert trace["y"] == [1200.0, 980.0]
 
 
+def test_default_y_skips_categorical_column_to_avoid_blank_chart():
+    # Result is region, product (text), revenue. A blind y=col[1] would put the
+    # text "product" on the y-axis -> a blank chart. Default must pick revenue.
+    table = {
+        "columns": ["region", "product", "revenue"],
+        "rows": [["West", "Widget", 1200], ["East", "Gadget", 980]],
+    }
+    spec = build_chart_spec({"type": "bar"}, table)  # no x/y hint
+    trace = spec["data"][0]
+    assert trace["y"] == [1200, 980]  # numeric column, not "product"
+
+
 def test_grouped_series_splits_into_multiple_traces():
     table = {
         "columns": ["month", "sales", "region"],

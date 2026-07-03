@@ -31,6 +31,9 @@ export interface KeyNumber {
 export interface PlotlyFigure {
   data: unknown[]
   layout?: Record<string, unknown>
+  // Set by the backend when the result can't be charted (scalar / single column /
+  // non-numeric) — `data` is empty and the result should render as a table.
+  table_only?: boolean
 }
 
 export interface DataTable {

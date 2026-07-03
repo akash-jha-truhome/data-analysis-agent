@@ -140,6 +140,13 @@ def _normalize_result(result, max_rows: int) -> dict:
         return _series_table(result, max_rows)
     if isinstance(result, pd.Index):
         return _series_table(pd.Series(result), max_rows)
+    # Array-likes (numpy arrays, pandas ExtensionArrays like ArrowStringArray from
+    # .unique(), plain lists/tuples) -> one value per row, not a single ugly cell.
+    if isinstance(result, (np.ndarray, list, tuple)) or isinstance(
+        result, pd.api.extensions.ExtensionArray
+    ):
+        values = list(result)
+        return {"columns": ["value"], "rows": [[_clean(v)] for v in values[:max_rows]]}
     return {"columns": ["value"], "rows": [[_clean(result)]]}
 
 

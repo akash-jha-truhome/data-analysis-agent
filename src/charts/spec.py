@@ -30,6 +30,27 @@ def _col_values(rows: list[list], idx: int) -> list:
     return [r[idx] if idx < len(r) else None for r in rows]
 
 
+def _is_numeric_column(rows: list[list], idx: int) -> bool:
+    """True if the column has at least one numeric (non-bool) value."""
+    for r in rows:
+        if idx < len(r):
+            v = r[idx]
+            if isinstance(v, bool):
+                continue
+            if isinstance(v, (int, float)):
+                return True
+    return False
+
+
+def _first_numeric_column(rows: list[list], *, exclude: int, ncols: int) -> int | None:
+    for idx in range(ncols):
+        if idx == exclude:
+            continue
+        if _is_numeric_column(rows, idx):
+            return idx
+    return None
+
+
 def _table_only(title: str, note: str = "This result is shown as a table.") -> dict:
     return {
         "data": [],
@@ -57,11 +78,14 @@ def build_chart_spec(chart_hint: dict | None, result_table: dict | None) -> dict
     y_idx = _column_index(columns, hint.get("y"))
 
     # Sensible defaults when the hint omitted/mismatched columns: first column
-    # is the axis/category, first numeric-looking column after it is the value.
+    # is the axis/category, and the value is the first NUMERIC column (a text
+    # column on the y-axis renders as a blank chart).
     if x_idx is None:
         x_idx = 0
-    if y_idx is None or y_idx == x_idx:
-        y_idx = 1 if len(columns) > 1 else None
+    if y_idx is None or y_idx == x_idx or not _is_numeric_column(rows, y_idx):
+        y_idx = _first_numeric_column(rows, exclude=x_idx, ncols=len(columns))
+        if y_idx is None and len(columns) > 1:
+            y_idx = 1 if x_idx != 1 else 0
 
     if y_idx is None:
         # Only one column — cannot form an (x, y) chart.

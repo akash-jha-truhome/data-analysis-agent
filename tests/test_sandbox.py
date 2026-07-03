@@ -73,6 +73,21 @@ def test_series_result_becomes_two_column_index_value_table(df_parquet):
     _assert_json_serializable(result)
 
 
+def test_unique_array_result_becomes_one_value_per_row(df_parquet):
+    # df['label'].unique() returns a pandas ExtensionArray (Arrow-backed), which
+    # must serialize to one clean value per row — not a single "<ArrowStringArray>
+    # [...]" repr blob in one cell.
+    result = run_code("result = df['label'].unique()", df_parquet, timeout_s=25, mem_mb=2048)
+
+    assert result["ok"] is True
+    table = result["result_table"]
+    assert table["columns"] == ["value"]
+    assert sorted(r[0] for r in table["rows"]) == ["w", "x", "y", "z"]
+    for row in table["rows"]:
+        assert isinstance(row[0], str)  # a clean scalar, not a list/repr blob
+    _assert_json_serializable(result)
+
+
 def test_bad_code_returns_error_and_traceback_without_raising(df_parquet):
     result = run_code(
         "result = df['nonexistent'].sum()",

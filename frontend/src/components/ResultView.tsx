@@ -67,6 +67,29 @@ function ChartCard({
   table: DataTable | null
 }) {
   const [showTable, setShowTable] = useState(false)
+
+  // When the result can't be charted (scalar / single column / non-numeric) the
+  // backend sends an empty spec — render the table directly, never a blank chart.
+  const notChartable = chart.table_only === true || (chart.data?.length ?? 0) === 0
+
+  if (notChartable) {
+    return (
+      <Card className="p-5">
+        <div className="mb-3 flex items-center gap-2">
+          <h2 className="text-sm font-semibold text-slate-800">Result</h2>
+          <span className="text-xs text-slate-400">shown as a table</span>
+        </div>
+        {table ? (
+          <DataTableView table={table} />
+        ) : (
+          <p className="py-6 text-center text-sm text-slate-400">
+            This result is a single value — see the answer above.
+          </p>
+        )}
+      </Card>
+    )
+  }
+
   return (
     <Card className="p-5">
       <div className="mb-3 flex items-center justify-between gap-3">
