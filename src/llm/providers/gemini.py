@@ -5,7 +5,7 @@ from google.genai import types
 class GeminiProvider:
     # Flash tier — cheapest sensible default for code generation + answer
     # composition. See spec/architecture.md > Stack.
-    DEFAULT_MODEL = "gemini-3.1-flash"
+    DEFAULT_MODEL = "gemini-3.5-flash"
 
     def __init__(self, api_key: str, model: str) -> None:
         self._client = genai.Client(api_key=api_key)

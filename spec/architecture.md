@@ -111,7 +111,7 @@ Two sinks, written in `finalize`:
 
 - **Language:** Python 3.12 (repo requires ≥ 3.11); TypeScript for the frontend.
 - **Agent framework:** LangGraph (`langgraph>=0.1`) — the write→execute→observe→retry loop needs conditional edges and a bounded cycle.
-- **LLM provider + model:** Google Gemini, model **`gemini-3.1-flash`** (Flash tier — cheapest sensible default; the Flash sibling of the skeleton's `gemini-3.1-pro`). Set via `AGENT_LLM_MODEL=gemini-3.1-flash`; `GeminiProvider.DEFAULT_MODEL` updated to this. Provider resolves to `gemini` (auto from `AGENT_GEMINI_API_KEY`). > **Assumed:** `gemini-3.1-flash` is the current Flash model id; confirm and adjust `AGENT_LLM_MODEL` if the live id differs.
+- **LLM provider + model:** Google Gemini, model **`gemini-3.5-flash`** (Flash tier — cheapest sensible default; the Flash sibling of the skeleton's `gemini-3.1-pro`). Set via `AGENT_LLM_MODEL=gemini-3.5-flash`; `GeminiProvider.DEFAULT_MODEL` updated to this. Provider resolves to `gemini` (auto from `AGENT_GEMINI_API_KEY`). > **Assumed:** `gemini-3.5-flash` is the current Flash model id; confirm and adjust `AGENT_LLM_MODEL` if the live id differs.
 - **Backend:** FastAPI (`fastapi>=0.115`) + uvicorn, serving the static frontend at `/app` on port 8001. Run: `uv run python -m src`.
 - **Database + ORM:** SQLite (`data/agent.db`) + SQLAlchemy 2.0 + Alembic. SQLite **is the production database** for this local, single-user tool — the Phase-1 gate runs `uv run alembic upgrade head` + `uv run pytest` against it (there is no PostgreSQL here).
 - **Frontend:** Next.js 15 + React 19, static export (`output: 'export'` → `frontend/out/`), Tailwind CSS. Built with `pnpm build`.

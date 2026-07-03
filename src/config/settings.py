@@ -21,7 +21,7 @@ class Settings(BaseSettings):
     # explicit default (not blank auto-detect) so that a machine which also
     # has an Anthropic key in .env still resolves to Gemini for the agent.
     llm_provider: str = Field(default="gemini")   # "anthropic" | "gemini"
-    llm_model: str = Field(default="")            # uses provider default (gemini-3.1-flash) when blank
+    llm_model: str = Field(default="")            # uses provider default (gemini-3.5-flash) when blank
 
     # Provider keys
     anthropic_api_key: str = Field(default="")

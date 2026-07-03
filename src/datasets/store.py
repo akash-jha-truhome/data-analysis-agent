@@ -23,7 +23,9 @@ def _data_root() -> Path:
     Tests monkeypatch this to redirect writes into a tmp directory.
     """
     root = getattr(get_settings(), "data_dir", None) or "data"
-    return Path(root)
+    # Anchor to an absolute path: the sandbox child process runs with cwd=src/,
+    # so a relative parquet path (e.g. "data/…") would not resolve there.
+    return Path(root).resolve()
 
 
 def _sample_rows() -> int:

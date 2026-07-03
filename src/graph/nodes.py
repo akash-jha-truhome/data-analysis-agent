@@ -395,6 +395,21 @@ def finalize(state: AgentState) -> AgentState:
 
 def handle_error(state: AgentState) -> AgentState:
     """Persist the failed run + trace; emit a structlog line. Never fabricates output."""
+    if not state.get("error"):
+        # Retries were exhausted on repeated code errors — execute() leaves
+        # state["error"] unset so the loop can retry, so record WHY it gave up
+        # from the last execution attempt (never leave the failure unexplained).
+        exec_result = state.get("exec_result") or {}
+        last_error = exec_result.get("error") or exec_result.get("traceback")
+        attempts = int(state.get("attempt", 0))
+        state = {
+            **state,
+            "error": (
+                f"Could not produce a runnable answer after {attempts} attempt(s): {last_error}"
+                if last_error
+                else f"Could not produce a runnable answer after {attempts} attempt(s)."
+            ),
+        }
     _persist_run(state, "failed")
     _append_audit_safe(_audit_record(state, "failed"))
     _log.warning(

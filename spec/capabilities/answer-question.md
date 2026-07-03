@@ -23,7 +23,7 @@ Turns a natural-language question into real pandas code, runs it in a bounded sa
 ## External Calls
 | System | Operation | On Failure |
 |--------|-----------|------------|
-| Gemini Flash (`gemini-3.1-flash`) | `write_code`, then `answer` | Transient → retry/backoff; hard → `handle_error`, run `failed`, clean `api_error` — never a fabricated number |
+| Gemini Flash (`gemini-3.5-flash`) | `write_code`, then `answer` | Transient → retry/backoff; hard → `handle_error`, run `failed`, clean `api_error` — never a fabricated number |
 | Sandbox subprocess | Execute generated pandas on full data | Code error → feed traceback back, retry (bounded `max_steps`); infra error → `handle_error` |
 
 ## Business Rules

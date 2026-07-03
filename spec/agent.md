@@ -22,8 +22,8 @@ The LangGraph agent that turns a natural-language question into an executed-pand
 
 | Agent / Node | Provider | Model ID | Rationale |
 |-------------|----------|----------|-----------|
-| `write_code` | Google Gemini | `gemini-3.1-flash` | Cheap, fast code generation from schema + samples; minimize cost. |
-| `answer` | Google Gemini | `gemini-3.1-flash` | Cheap, fast prose + structured chart hint from the computed result. |
+| `write_code` | Google Gemini | `gemini-3.5-flash` | Cheap, fast code generation from schema + samples; minimize cost. |
+| `answer` | Google Gemini | `gemini-3.5-flash` | Cheap, fast prose + structured chart hint from the computed result. |
 
 No LLM in `prepare`, `execute`, `build_chart`, `finalize`, `handle_error` (deterministic). **2 LLM calls per successful query; +1 per retry.**
 
@@ -91,7 +91,7 @@ class AgentState(TypedDict, total=False):
 
 ### `write_code`
 **Reads:** `question`, `schema`, `sample_rows`, `code`+`exec_result` (on retry). **Writes:** `code`, `plan`, `attempt+=1`, `tokens`, `step_trace`.
-**LLM:** yes — `gemini-3.1-flash`, prompt `src/prompts/write_code.md`; input is schema + `sample_rows` + question (+ prior code + traceback on retry); output is a brief plan + a ```python block assigning `result`.
+**LLM:** yes — `gemini-3.5-flash`, prompt `src/prompts/write_code.md`; input is schema + `sample_rows` + question (+ prior code + traceback on retry); output is a brief plan + a ```python block assigning `result`.
 **External calls:** Gemini (transient → retry/backoff; hard → set `error`).
 
 ### `execute`
@@ -100,7 +100,7 @@ class AgentState(TypedDict, total=False):
 
 ### `answer`
 **Reads:** `question`, `result_table`. **Writes:** `answer`, `key_numbers`, a chart hint (into `exec_result`/state), `tokens`, `step_trace`.
-**LLM:** yes — `gemini-3.1-flash`, prompt `src/prompts/answer.md`; input is the question + the **computed result table** (not raw data); output is strict JSON `{answer, key_numbers, chart}`.
+**LLM:** yes — `gemini-3.5-flash`, prompt `src/prompts/answer.md`; input is the question + the **computed result table** (not raw data); output is strict JSON `{answer, key_numbers, chart}`.
 **External calls:** Gemini (as above). On JSON parse failure → one reformat retry → else `error`.
 
 ### `build_chart`
