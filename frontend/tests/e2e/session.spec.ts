@@ -21,7 +21,7 @@ test('upload once → ask, follow-up in thread, suggestions, data quality, histo
 
   // 2. Ask the FIRST question (POST /ask — mints the session).
   await page.getByLabel('Question about your data').fill('total revenue by region')
-  await page.getByRole('button', { name: 'Ask' }).click()
+  await page.getByRole('button', { name: 'Ask', exact: true }).click()
 
   // First answer renders in the thread as real prose.
   const firstAnswer = page.getByTestId('answer-text').first()
@@ -48,7 +48,7 @@ test('upload once → ask, follow-up in thread, suggestions, data quality, histo
 
   // 3. Ask a CONTEXT-DEPENDENT follow-up in the SAME session.
   await page.getByLabel('Question about your data').fill('now break that down by month')
-  await page.getByRole('button', { name: 'Ask' }).click()
+  await page.getByRole('button', { name: 'Ask', exact: true }).click()
 
   // A second turn's answer renders in the thread (2 answers total).
   await expect

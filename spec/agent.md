@@ -79,6 +79,8 @@ class AgentState(TypedDict, total=False):
     chart_spec: dict | None         # Plotly figure spec — set by build_chart
     result_table: dict | None       # {columns, rows} behind the answer — set from exec_result
     tokens: dict                    # {prompt, completion, total} — accumulated across LLM calls
+    suggestions: list               # Phase 2 — 2-3 follow-up questions, batched into answer
+    data_quality: dict | None       # Phase 2 — deterministic quality flags — set by profile_quality
 
     # Control
     error: str | None               # set by any node on fatal failure
@@ -93,9 +95,13 @@ class AgentState(TypedDict, total=False):
 **Reads:** `dataset_id`. **Writes:** `schema`, `sample_rows`, `parquet_paths`, `step_trace`, `attempt=0`.
 **LLM:** no. **Behaviour:** loads dataset metadata from the dataset store (schema + sample rows + parquet path). Full data is NOT loaded into the process here. On missing dataset → set `error`.
 
+### `profile_quality` (Phase 2)
+**Reads:** `dataset_id`, `parquet_paths`. **Writes:** `data_quality`.
+**LLM:** no. **Behaviour:** runs a canned, deterministic pandas profiling script in the SAME bounded, network-free sandbox over the FULL parquet, reporting missing values (count + pct per column), `duplicate_rows`, numeric `outliers` (1.5×IQR), and a one-line `summary`. Cached per `dataset_id` (quality is a property of the dataset, not the question). **MUST NEVER fail the run** — degrades to `{}` on any error and always continues to `write_code`.
+
 ### `write_code`
-**Reads:** `question`, `schema`, `sample_rows`, `code`+`exec_result` (on retry). **Writes:** `code`, `plan`, `attempt+=1`, `tokens`, `step_trace`.
-**LLM:** yes — `gemini-3.5-flash`, prompt `src/prompts/write_code.md`; input is schema + `sample_rows` + question (+ prior code + traceback on retry); output is a brief plan + a ```python block assigning `result`.
+**Reads:** `question`, `schema`, `sample_rows`, `conversation` (Phase 2), `code`+`exec_result` (on retry). **Writes:** `code`, `plan`, `attempt+=1`, `tokens`, `step_trace`.
+**LLM:** yes — `gemini-3.5-flash`, prompt `src/prompts/write_code.md`; input is schema + `sample_rows` + question (+ bounded prior-turn conversation TEXT + prior code + traceback on retry); output is a brief plan + a ```python block assigning `result`.
 **External calls:** Gemini (transient → retry/backoff; hard → set `error`).
 
 ### `execute`
@@ -103,8 +109,8 @@ class AgentState(TypedDict, total=False):
 **LLM:** no. **Behaviour:** calls `sandbox.run_code` with timeout + memory cap. Captures the computed table or the traceback. Never sets `error` on a code error (that's the retry loop's job); sets `error` only on sandbox-infrastructure failure.
 
 ### `answer`
-**Reads:** `question`, `result_table`. **Writes:** `answer`, `key_numbers`, a chart hint (into `exec_result`/state), `tokens`, `step_trace`.
-**LLM:** yes — `gemini-3.5-flash`, prompt `src/prompts/answer.md`; input is the question + the **computed result table** (not raw data); output is strict JSON `{answer, key_numbers, chart}`.
+**Reads:** `question`, `result_table`. **Writes:** `answer`, `key_numbers`, `suggestions` (Phase 2), a chart hint, `tokens`, `step_trace`.
+**LLM:** yes — `gemini-3.5-flash`, prompt `src/prompts/answer.md`; input is the question + the **computed result table** (not raw data); output is strict JSON `{answer, key_numbers, chart, suggestions}`. `suggestions` (2–3 dataset-grounded follow-up questions) are BATCHED into this same call — no extra LLM round-trip; default `[]` if absent.
 **External calls:** Gemini (as above). On JSON parse failure → one reformat retry → else `error`.
 
 ### `build_chart`
@@ -112,7 +118,7 @@ class AgentState(TypedDict, total=False):
 **LLM:** no. **Behaviour:** deterministically builds a Plotly figure spec (`src/charts/spec.py`) from the hint (`type` ∈ bar|line|scatter|pie) + the result table; falls back to a table-only spec if the shape can't be charted. Never fails the run.
 
 ### `finalize`
-**Reads:** all output fields. **Writes:** `status="completed"`. **Behaviour:** persists the full audit record to SQLite (`RunRow`) and appends a JSON line to `data/audit.log`; emits a structlog line (question, latency, tokens, status).
+**Reads:** all output fields. **Writes:** `status="completed"`. **Behaviour:** persists the full audit record to SQLite (`RunRow`), including Phase 2 `suggestions_json` + `data_quality_json`, and appends a JSON line to `data/audit.log`; emits a structlog line (question, latency, tokens, status). The **runner** (not this node) then persists the conversation turns (`MessageRow` user + assistant) and accumulates `SessionRow.total_tokens`.
 
 ### `handle_error`
 **Reads:** `error`, `run_id`, `step_trace`. **Writes:** `status="failed"`. **Behaviour:** persists the failed run + trace to SQLite + audit log, logs with `run_id`, terminates.
@@ -126,6 +132,9 @@ START
   │
   ▼
 prepare ──(error)──────────────────────────► handle_error ──► END
+  │
+  ▼
+profile_quality  (deterministic; never errors the run)
   │
   ▼
 write_code ──(error)───────────────────────► handle_error
@@ -148,7 +157,8 @@ execute
 | Source node | Condition | Target |
 |-------------|-----------|--------|
 | `prepare` | `state.error` set | `handle_error` |
-| `prepare` | else | `write_code` |
+| `prepare` | else | `profile_quality` |
+| `profile_quality` | always (never errors) | `write_code` |
 | `write_code` | `state.error` set (Gemini hard failure) | `handle_error` |
 | `write_code` | else | `execute` |
 | `execute` | `exec_result.ok` | `answer` |
@@ -166,11 +176,13 @@ execute
 | **Within a run** | LangGraph state | schema, samples, code, exec results, trace, tokens |
 | **Across runs** | SQLite `runs` + `data/audit.log` | full audit trail (question, code, result, tokens, steps, status) |
 | **Loaded dataset** | Dataset store (parquet on disk, referenced by `dataset_id`) | dataset stays loaded across questions without re-upload (Phase 1) |
-| **Conversation** | Phase 2 — `SessionRow` + `MessageRow` message history injected into `write_code` | multi-turn follow-ups ("now break that down by month") |
+| **Conversation** | **Phase 2 (implemented)** — `SessionRow` + `MessageRow` history; the runner loads a session's prior turns (oldest-first) into `state["conversation"]` and `write_code` injects them as TEXT ONLY | multi-turn follow-ups ("now break that down by month") |
+| **Data quality** | Phase 2 — `profile_quality` deterministic pass, cached per dataset; persisted as `RunRow.data_quality_json` | surface missing/duplicate/outlier flags alongside the answer |
+| **Suggestions** | Phase 2 — batched into the `answer` call; persisted as `RunRow.suggestions_json` | 2–3 grounded follow-up questions |
 
-> **Assumed / justified:** multi-turn conversation memory is **deferred to Phase 2**, because the brief scopes Phase 1 to a single question (upload → ask ONE → answer) as the smallest first-time-right win. The dataset still stays loaded in Phase 1; only the multi-turn history browser and follow-up context are Phase 2. This is an explicit, intentional deferral, not a gap.
+> **Phase 2 memory flow:** `run_agent(dataset_id, question, session_id=None)` — when `session_id` is None the runner opens a new `SessionRow` bound to the dataset; otherwise it loads that session's prior `MessageRow`s (oldest-first) into `state["conversation"]` as `[{role, content}]`. After the graph completes, the runner appends a `user` + an `assistant` `MessageRow` (linked to `run_id`) and adds the run's total tokens to `SessionRow.total_tokens`. The `/sessions/*` read API is owned by a sibling slice.
 
-**Context-window management:** trivially bounded — only schema + ≤ `sample_rows` rows + one result table are ever sent; no full data, no growth with dataset size.
+**Context-window management:** trivially bounded — only schema + ≤ `sample_rows` rows + one result table + the last ≤6 prior-turn TEXT snippets (each ≤500 chars) are ever sent; no full data, no growth with dataset size.
 
 ---
 
@@ -221,6 +233,7 @@ Phase 1–2: none. **Phase 3** adds the clarification gate:
 graph = StateGraph(AgentState)
 
 graph.add_node("prepare", prepare)
+graph.add_node("profile_quality", profile_quality)  # Phase 2 — deterministic, never errors
 graph.add_node("write_code", write_code)
 graph.add_node("execute", execute)
 graph.add_node("answer", answer)
@@ -232,9 +245,10 @@ graph.set_entry_point("prepare")
 
 graph.add_conditional_edges(
     "prepare",
-    lambda s: "handle_error" if s.get("error") else "write_code",
-    {"handle_error": "handle_error", "write_code": "write_code"},
+    lambda s: "handle_error" if s.get("error") else "profile_quality",
+    {"handle_error": "handle_error", "profile_quality": "profile_quality"},
 )
+graph.add_edge("profile_quality", "write_code")  # never errors the run
 graph.add_conditional_edges(
     "write_code",
     lambda s: "handle_error" if s.get("error") else "execute",

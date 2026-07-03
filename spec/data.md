@@ -24,6 +24,8 @@ One row per question asked. This is the audit trail: exactly what was asked, the
 | result_json | Text (JSON) | no | Normalized result table `{columns, rows}` behind the answer |
 | answer_text | Text | no | Final plain-language answer |
 | key_numbers_json | Text (JSON) | no | `[{label, value}]` |
+| suggestions_json | Text (JSON) | no | Phase 2 — `["q1","q2","q3"]` follow-up questions (batched into `answer`) |
+| data_quality_json | Text (JSON) | no | Phase 2 — `{missing:[{column,count,pct}], duplicate_rows, outliers:[{column,count}], summary}` from `profile_quality` |
 | chart_json | Text (JSON) | no | Plotly figure spec |
 | step_trace_json | Text (JSON) | no | `[{step, action, code, ok, error, duration_ms}]` — every attempt |
 | prompt_tokens | Integer | no | Sum of prompt tokens across LLM calls |
@@ -34,7 +36,7 @@ One row per question asked. This is the audit trail: exactly what was asked, the
 | created_at | Timestamp | yes | Insert time |
 | updated_at | Timestamp | yes | Last update |
 
-> Skeleton compatibility: the existing `input_text`/`output_text` columns are retained (nullable) or migrated; the new columns above are added in `alembic/versions/0002_*.py`.
+> Skeleton compatibility: the existing `input_text`/`output_text` columns are retained (nullable) or migrated; the analysis columns are added in `alembic/versions/0002_*.py`. The Phase 2 insight columns (`suggestions_json`, `data_quality_json`) plus the `sessions` + `messages` tables are added in `alembic/versions/0003_sessions_and_insights.py` (SQLite-safe `op.batch_alter_table` for the new `runs` columns).
 
 ### Entity: DatasetRow (`datasets`)
 
